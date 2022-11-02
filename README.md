@@ -1,6 +1,6 @@
 # Mina zkApp: Wordle
 
-This template uses TypeScript.
+Zero-knowledge Wordle powered by snarkyjs from Mina
 
 ## How to build
 
