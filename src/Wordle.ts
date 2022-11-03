@@ -1,13 +1,11 @@
 import {
   Field,
-  SmartContract,
-  state,
-  State,
-  method,
-  DeployArgs,
-  Permissions,
-  CircuitValue,
   Poseidon,
+  Bool,
+  ZkProgram,
+  CircuitValue,
+  prop,
+  SelfProof,
 } from 'snarkyjs';
 
 // We need a minimum of 5 bits to represent 26 uppercase english letters.
@@ -41,17 +39,17 @@ import {
 // Z -> 25
 
 export class Word {
-  const N_LETTERS = 5;
-  const N_LETTER_BITS = 5;
+  static readonly N_LETTERS = 5;
+  static readonly N_LETTER_BITS = 5;
 
   word: Field[];
 
   constructor(serializedWord: Field) {
     const wordBits = serializedWord.toBits();
-    for (let i = 0; i < N_LETTERS; i++) {
+    for (let i = 0; i < Word.N_LETTERS; i++) {
       let letterBits = [];
-      for (let j = 0; j < N_LETTER_BITS; j++) {
-        letterBits.push(wordBits[i*N_LETTER_BITS + j]);
+      for (let j = 0; j < Word.N_LETTER_BITS; j++) {
+        letterBits.push(wordBits[i * Word.N_LETTER_BITS + j]);
       }
       this.word.push(Field.ofBits(letterBits)); 
     }
@@ -59,35 +57,57 @@ export class Word {
 
   serialize(): Field {
     let wordBits = [];
-    for (let i = 0; i < N_LETTERS; i++) {
+    for (let i = 0; i < Word.N_LETTERS; i++) {
       let letterBits = this.word[i].toBits();
-      for (let j = 0; j < N_LETTER_BITS; j++) {
+      for (let j = 0; j < Word.N_LETTER_BITS; j++) {
         wordBits.push(letterBits[j]);
       }
     }
     return Field.ofBits(wordBits);
   }
 
-  getChar(i: Field): Field {
-    return this.word[i.toConstant];
+  getChar(i: number): Field {
+    return this.word[i];
+  }
+  
+  hash(salt: Field): Field {
+    return Poseidon.hash([salt, this.serialize()]);
+  }
+  
+  isNone(): Bool {
+    let ret = new Bool(true);
+    for (let i = 0; i < Word.N_LETTERS; i++) {
+      ret = ret && this.word[i].equals(Field.zero);
+    }
+    return ret;
+  }
+  
+  equal(othr: Word): Bool {
+    // TODO: can we just compare arrays directly?
+    let ret = new Bool(true);
+    for (let i = 0; i < Word.N_LETTERS; i++) {
+      ret = ret && this.word[i].equals(othr.word[i]);
+    }
+    return ret;
   }
 }
 
 export class Clues {
-  const N_CLUES = 6
-  const N_CLUE_LETTER_BITS = 2;
+  static readonly N_CLUES = 6
+  static readonly N_CLUE_LETTER_BITS = 2;
 
   // Values: 0 -> Grey, 1 -> Yellow, 2 -> Green
-  clues: Field[N_CLUES][];
+  clues = new Array<Field[]>(Clues.N_CLUES);
 
   constructor(serializedClues: Field) {
-    for (let i = 0; i < N_CLUES; i++) {
-      let offsetRow = i * N_CLUE_LETTER_BITS * N_CLUES;
+    let serializedCluesBits = serializedClues.toBits();
+    for (let i = 0; i < Clues.N_CLUES; i++) {
+      let offsetRow = i * Clues.N_CLUE_LETTER_BITS * Clues.N_CLUES;
       for (let j = 0; j < Word.N_LETTERS; j++) {
-        let offsetVal = offsetRow + (j * N_CLUE_LETTER_BITS);
+        let offsetVal = offsetRow + (j * Clues.N_CLUE_LETTER_BITS);
         this.clues[i].push(Field.ofBits([
-                            serializedClues[offsetVal],
-                            serializedClues[offsetVal + 1]
+                            serializedCluesBits[offsetVal],
+                            serializedCluesBits[offsetVal + 1]
                            ]));
       }
     }
@@ -95,10 +115,10 @@ export class Clues {
 
   serialize(): Field {
     let cluesBits = [];
-    for (let i = 0; i < N_CLUES; i++) {
+    for (let i = 0; i < Clues.N_CLUES; i++) {
       for (let j = 0; j < Word.N_LETTERS; j++) {
           let clueLetterBits = this.clues[i][j].toBits();
-          for (let k = 0; k < N_CLUE_LETTER_BITS; k++) {
+          for (let k = 0; k < Clues.N_CLUE_LETTER_BITS; k++) {
             cluesBits.push(clueLetterBits[k]);
           }
       }
@@ -107,7 +127,7 @@ export class Clues {
   }
 
   update(solutionWord: Word, guessedWord: Word, nRow: Field) {
-    let clue = Field[Word.N_LETTERS];
+    let clue = new Array<Field>(Word.N_LETTERS);
     for (let i = 0; i < Word.N_LETTERS; i++) {
       for (let j = 0; j < Word.N_LETTERS; j++) {
         if (guessedWord.getChar(i) == solutionWord.getChar(j)) {
@@ -122,105 +142,146 @@ export class Clues {
       }
     }
 
-    this.clues[nRow] = clue;
+    this.clues[Number(nRow.toBigInt())] = clue;
   }
 }
-
-
-export class Wordle extends SmartContract {
-
-  const saltCommit = new Field(12345); // TODO
-  const solutionCommit = new Field(1234);  // TODO: Store as state?
+class WordleState extends CircuitValue {
+  // Some random salt to prevent rainbow table of valid sultions.
+  @prop commitSalt: Field;
+  // Commit (poseidon hash) of the solution + the random salt.
+  @prop solutionCommit: Field;
 
   // Current row.
-  @state(Field) nRow = State<Field>();
-  // Clues embeded in a single field elem (we need 6 x 5 x 2 bits).
-  @state(Field) clues = State<Field>();
+  @prop nRow: Field;
+  // Clues embeded in a single field elem (we need 6 x 5 x 2 = 60 bits).
+  @prop clues: Clues;
   // True if it's the players turn to guess a word. If false it's the "houses" turn to evaluate guess.
-  @state(Field) playersTurn = State<Bool>();
+  @prop playersTurn: Bool;
   // Defaults to false, set to true when the player wins.
-  @state(Bool) gameFinished = State<Bool>();
-  // Last guessed word embeded into a single field elem.
-  @state(Field) lastGuess = State<Bool>();
+  @prop gameFinished: Bool;
+  // Last guessed word.
+  @prop lastGuess: Word;
 
-  deploy(args: DeployArgs) {
-    super.deploy(args);
-    this.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
-    });
-
-    this.nRow.set(new Field(0));
-    this.clues.set(new Field(0));
-    this.playersTurn.set(new Bool(true));
-    this.gameFinished.set(new Bool(false));
-    this.lastGuess.set(new Field(0));
-  }
-
-  @method updateHouse(solition: Field) {
-    // If the game is already finished, abort.
-    const finished = this.gameFinished.get();
-    this.gameFinished.assertEquals(finished); // precondition that links this.gameDone.get() to the actual on-chain state
-    finished.assertEquals(false);
-
-    // Check if it's the houses turn.
-    const playersTurn = this.playersTurn.get();
-    this.playersTurn.assertEquals(playersTurn);
-    playersTurn.assertEquals(false);
-
-    // Get other things from SC's state.
-    const lastGuess = this.lastGuess.get();
-    this.lastGuess.assertEquals(lastGuess);
-    const clues = this.clues.get();
-    this.clues.assertEquals(clues);
-
-    // Check if nRow + 1 > 5. If so finish game.
-    const nRow = this.nRow.get();
-    this.nRow.assertEquals(nRow);
-
-    const nRowP1 = nRow.add(1);
-    nRowP1.assertLte(5);
-
-    // Check validity of solution via commitment.
-    Poseidon.hash([saltCommit, solution]).assertEquals(solutionCommit);
-
-    // Check if player guessed right word. If so finish game.
-    let solutionWord = new Word(solution);
-    let lastGuessWord = new Word(lastGuess);
-    let rightWord = true;
-    for (let i = 0; i < 5; i++) {
-        rightWord = rightWord && (solutionWord.getChar(i) == lastGuessWord.getChar(i));
-    }
-
-    if (rightWord) {
-        this.gameFinished.set(true);
-    }
-
-    // Update clues.
-    let cluesObj = new Clues(clues);
-    cluesObj.update(solutionWord, lastGuessWord, nRow);
-    this.clues.set(cluesObj.serialize());
-
-    // Update stats.
-    this.nRow.set(nRowP1);
-    this.playersTurn.set(true);
-  }
-
-  @method updatePlayer(guess: Field) {
-    // If the game is already finished, abort.
-    const finished = this.gameFinished.get();
-    this.gameFinished.assertEquals(finished); // precondition that links this.gameDone.get() to the actual on-chain state
-    finished.assertEquals(false);
-
-    // Check if players turn.
-    const playersTurn = this.playersTurn.get();
-    this.playersTurn.assertEquals(playersTurn);
-    playersTurn.assertEquals(true);
-
-    // TODO: Check if guess is of valid format?
-
-    // Update lastGuess and stats.
-    this.lastGuess.set(guess);
-    this.playersTurn.set(false);
+  constructor(
+    commitSalt: Field,
+    solutionCommit: Field,
+    nRow: Field,
+    clues: Clues,
+    playersTurn: Bool,
+    gameFinished: Bool,
+    lastGuess: Word
+  ) {
+    super();
+    this.commitSalt = commitSalt;
+    this.solutionCommit = solutionCommit;
+    this.nRow = nRow;
+    this.clues = clues;
+    this.playersTurn = playersTurn;
+    this.gameFinished = gameFinished;
+    this.lastGuess = lastGuess;
   }
 }
+
+let Wordle = ZkProgram({
+  publicInput: WordleState,
+
+  methonds: {
+    init: { // Base case; This will commit the house to the valid solution.
+            //            It cannot be changed after the init or else the recursive
+            //            proof verification will fail.
+      privateInputs: [Word],
+
+      method(
+        publicInput: WordleState,
+        solution: Word
+      ) {
+        // TODO: Check that the solution is valid so the code generator can't create an
+        // illegal game.
+        
+        publicInput.solutionCommit.assertEquals(solution.hash(publicInput.commitSalt));
+        publicInput.nRow.assertEquals(Field.zero);
+        publicInput.clues.serialize().assertEquals(Field.zero);
+        publicInput.playersTurn.assertEquals(new Bool(false));
+        publicInput.gameFinished.assertEquals(new Bool(false));
+        publicInput.lastGuess.isNone().assertEquals(new Bool(true));
+      }
+    },
+
+    updateHouse: {
+      privateInputs: [Word, SelfProof],
+
+      method(
+        publicInput: WordleState,
+        solution: Word,
+        prevProof: SelfProof<WordleState>
+      ) {
+        prevProof.verify();
+
+        // If the game is already finished, abort.
+        const finished = prevProof.publicInput.gameFinished;
+        finished.assertEquals(false);
+        publicInput.gameFinished.assertEquals(false);
+
+        // Check if it's the "houses" turn.
+        const playersTurn = prevProof.publicInput.playersTurn;
+        playersTurn.assertEquals(false);
+        
+        // Make sure to flip this flag in next turn.
+        prevProof.publicInput.playersTurn.assertEquals(true);
+
+        // Check if nRow + 1 > 5. If so finish game.
+        let nRow = prevProof.publicInput.nRow;
+        const nRowP1 = nRow.add(1);
+        nRowP1.assertLte(5);
+        publicInput.nRow.assertEquals(nRowP1);
+        
+        // Check validity of solution via commitment.
+        solution.hash(prevProof.publicInput.commitSalt).assertEquals(prevProof.publicInput.solutionCommit);
+        
+        // Check if player guessed right word. If so finish game.
+        let rightWord = prevProof.publicInput.lastGuess.equal(solution);
+        publicInput.gameFinished.assertEquals(rightWord);
+
+        // Update clues.
+        let clues = prevProof.publicInput.clues;
+        clues.update(solution, prevProof.publicInput.lastGuess, nRow);
+        publicInput.clues.serialize().assertEquals(clues.serialize());
+      }
+    },
+
+    updatePlayer: {
+      privateInputs: [Word, SelfProof],
+
+      method(
+        publicInput: WordleState,
+        guess: Word,
+        prevProof: SelfProof<WordleState>
+      ) {
+        prevProof.verify();
+
+        // If the game is already finished, abort.
+        const finished = prevProof.publicInput.gameFinished;
+        finished.assertEquals(false);
+        publicInput.gameFinished.assertEquals(false);
+
+        // Check if it's the players turn.
+        const playersTurn = prevProof.publicInput.playersTurn;
+        playersTurn.assertEquals(true);
+
+        // Make sure to flip this flag in next turn.
+        prevProof.publicInput.playersTurn.assertEquals(false);
+        
+        // Update lastGuess and stats.
+        publicInput.lastGuess.serialize().assertEquals(guess.serialize());
+        
+        // Make sure to propagate other values from previous proof.
+        publicInput.commitSalt.assertEquals(prevProof.publicInput.commitSalt);
+        publicInput.solutionCommit.assertEquals(prevProof.publicInput.solutionCommit);
+        publicInput.nRow.assertEquals(prevProof.publicInput.nRow);
+        publicInput.clues.serialize().assertEquals(prevProof.publicInput.clues.serialize());
+      }
+    }
+    
+  }
+
+})
