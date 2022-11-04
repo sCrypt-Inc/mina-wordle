@@ -1,11 +1,14 @@
 import {
   Field,
-  Poseidon,
+  SmartContract,
+  state,
+  State,
+  method,
   Bool,
-  ZkProgram,
+  DeployArgs,
+  Permissions,
   CircuitValue,
-  prop,
-  SelfProof,
+  Poseidon,
 } from 'snarkyjs';
 
 // We need a minimum of 5 bits to represent 26 uppercase english letters.
@@ -145,143 +148,102 @@ export class Clues {
     this.clues[Number(nRow.toBigInt())] = clue;
   }
 }
-class WordleState extends CircuitValue {
-  // Some random salt to prevent rainbow table of valid sultions.
-  @prop commitSalt: Field;
-  // Commit (poseidon hash) of the solution + the random salt.
-  @prop solutionCommit: Field;
+
+
+export class Wordle extends SmartContract {
+
+  @state(Field) saltCommit = State<Field>();
+  @state(Field) solutionCommit = State<Field>();
 
   // Current row.
-  @prop nRow: Field;
-  // Clues embeded in a single field elem (we need 6 x 5 x 2 = 60 bits).
-  @prop clues: Clues;
+  @state(Field) nRow = State<Field>();
+  // Clues embeded in a single field elem (we need 6 x 5 x 2 bits).
+  @state(Field) clues = State<Field>();
   // True if it's the players turn to guess a word. If false it's the "houses" turn to evaluate guess.
-  @prop playersTurn: Bool;
+  @state(Field) playersTurn = State<Bool>();
   // Defaults to false, set to true when the player wins.
-  @prop gameFinished: Bool;
-  // Last guessed word.
-  @prop lastGuess: Word;
+  @state(Bool) gameFinished = State<Bool>();
+  // Last guessed word embeded into a single field elem.
+  @state(Field) lastGuess = State<Field>();
 
-  constructor(
-    commitSalt: Field,
-    solutionCommit: Field,
-    nRow: Field,
-    clues: Clues,
-    playersTurn: Bool,
-    gameFinished: Bool,
-    lastGuess: Word
-  ) {
-    super();
-    this.commitSalt = commitSalt;
-    this.solutionCommit = solutionCommit;
-    this.nRow = nRow;
-    this.clues = clues;
-    this.playersTurn = playersTurn;
-    this.gameFinished = gameFinished;
-    this.lastGuess = lastGuess;
+  deploy(args: DeployArgs) {
+    super.deploy(args);
+    this.setPermissions({
+      ...Permissions.default(),
+      editState: Permissions.proofOrSignature(),
+    });
+
+    this.nRow.set(new Field(0));
+    this.clues.set(new Field(0));
+    this.playersTurn.set(new Bool(true));
+    this.gameFinished.set(new Bool(false));
+    this.lastGuess.set(new Field(0));
+  }
+
+  @method updateHouse(solution: Field) {
+    // If the game is already finished, abort.
+    const finished = this.gameFinished.get();
+    this.gameFinished.assertEquals(finished); // precondition that links this.gameDone.get() to the actual on-chain state
+    finished.assertEquals(false);
+
+    // Check if it's the houses turn.
+    const playersTurn = this.playersTurn.get();
+    this.playersTurn.assertEquals(playersTurn);
+    playersTurn.assertEquals(false);
+
+    // Get other things from SC's state.
+    const lastGuess = this.lastGuess.get();
+    this.lastGuess.assertEquals(lastGuess);
+    const clues = this.clues.get();
+    this.clues.assertEquals(clues);
+
+    // Check if nRow + 1 > 5. If so finish game.
+    const nRow = this.nRow.get();
+    this.nRow.assertEquals(nRow);
+
+    const nRowP1 = nRow.add(1);
+    nRowP1.assertLte(5);
+
+    // Check validity of solution via commitment.
+    Poseidon.hash([this.saltCommit.get(), solution]).assertEquals(this.solutionCommit.get());
+
+    // Check if player guessed right word. If so finish game.
+    let solutionWord = new Word(solution);
+    let lastGuessWord = new Word(lastGuess);
+    let rightWord = true;
+    for (let i = 0; i < 5; i++) {
+        rightWord = rightWord && (solutionWord.getChar(i) == lastGuessWord.getChar(i));
+    }
+
+    if (rightWord) {
+        this.gameFinished.set(new Bool(true));
+    }
+
+    // Update clues.
+    let cluesObj = new Clues(clues);
+    cluesObj.update(solutionWord, lastGuessWord, nRow);
+    this.clues.set(cluesObj.serialize());
+
+    // Update stats.
+    this.nRow.set(nRowP1);
+    this.playersTurn.set(new Bool(true));
+  }
+
+  @method updatePlayer(guess: Field) {
+    // If the game is already finished, abort.
+    const finished = this.gameFinished.get();
+    this.gameFinished.assertEquals(finished); // precondition that links this.gameDone.get() to the actual on-chain state
+    finished.assertEquals(false);
+
+    // Check if players turn.
+    const playersTurn = this.playersTurn.get();
+    this.playersTurn.assertEquals(playersTurn);
+    playersTurn.assertEquals(true);
+
+    // TODO: Check if guess is of valid format?
+
+    // Update lastGuess and stats.
+    this.lastGuess.set(guess);
+    this.playersTurn.set(new Bool(false));
   }
 }
-
-let Wordle = ZkProgram({
-  publicInput: WordleState,
-
-  methonds: {
-    init: { // Base case; This will commit the house to the valid solution.
-            //            It cannot be changed after the init or else the recursive
-            //            proof verification will fail.
-      privateInputs: [Word],
-
-      method(
-        publicInput: WordleState,
-        solution: Word
-      ) {
-        // TODO: Check that the solution is valid so the code generator can't create an
-        // illegal game.
-        
-        publicInput.solutionCommit.assertEquals(solution.hash(publicInput.commitSalt));
-        publicInput.nRow.assertEquals(Field.zero);
-        publicInput.clues.serialize().assertEquals(Field.zero);
-        publicInput.playersTurn.assertEquals(new Bool(false));
-        publicInput.gameFinished.assertEquals(new Bool(false));
-        publicInput.lastGuess.isNone().assertEquals(new Bool(true));
-      }
-    },
-
-    updateHouse: {
-      privateInputs: [Word, SelfProof],
-
-      method(
-        publicInput: WordleState,
-        solution: Word,
-        prevProof: SelfProof<WordleState>
-      ) {
-        prevProof.verify();
-
-        // If the game is already finished, abort.
-        const finished = prevProof.publicInput.gameFinished;
-        finished.assertEquals(false);
-        publicInput.gameFinished.assertEquals(false);
-
-        // Check if it's the "houses" turn.
-        const playersTurn = prevProof.publicInput.playersTurn;
-        playersTurn.assertEquals(false);
-        
-        // Make sure to flip this flag in next turn.
-        prevProof.publicInput.playersTurn.assertEquals(true);
-
-        // Check if nRow + 1 > 5. If so finish game.
-        let nRow = prevProof.publicInput.nRow;
-        const nRowP1 = nRow.add(1);
-        nRowP1.assertLte(5);
-        publicInput.nRow.assertEquals(nRowP1);
-        
-        // Check validity of solution via commitment.
-        solution.hash(prevProof.publicInput.commitSalt).assertEquals(prevProof.publicInput.solutionCommit);
-        
-        // Check if player guessed right word. If so finish game.
-        let rightWord = prevProof.publicInput.lastGuess.equal(solution);
-        publicInput.gameFinished.assertEquals(rightWord);
-
-        // Update clues.
-        let clues = prevProof.publicInput.clues;
-        clues.update(solution, prevProof.publicInput.lastGuess, nRow);
-        publicInput.clues.serialize().assertEquals(clues.serialize());
-      }
-    },
-
-    updatePlayer: {
-      privateInputs: [Word, SelfProof],
-
-      method(
-        publicInput: WordleState,
-        guess: Word,
-        prevProof: SelfProof<WordleState>
-      ) {
-        prevProof.verify();
-
-        // If the game is already finished, abort.
-        const finished = prevProof.publicInput.gameFinished;
-        finished.assertEquals(false);
-        publicInput.gameFinished.assertEquals(false);
-
-        // Check if it's the players turn.
-        const playersTurn = prevProof.publicInput.playersTurn;
-        playersTurn.assertEquals(true);
-
-        // Make sure to flip this flag in next turn.
-        prevProof.publicInput.playersTurn.assertEquals(false);
-        
-        // Update lastGuess and stats.
-        publicInput.lastGuess.serialize().assertEquals(guess.serialize());
-        
-        // Make sure to propagate other values from previous proof.
-        publicInput.commitSalt.assertEquals(prevProof.publicInput.commitSalt);
-        publicInput.solutionCommit.assertEquals(prevProof.publicInput.solutionCommit);
-        publicInput.nRow.assertEquals(prevProof.publicInput.nRow);
-        publicInput.clues.serialize().assertEquals(prevProof.publicInput.clues.serialize());
-      }
-    }
-    
-  }
-
-})
