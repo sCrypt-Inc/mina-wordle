@@ -56,14 +56,7 @@ export class Word {
   }
 
   serialize(): Field {
-    let wordBits = [];
-    for (let i = 0; i < Word.N_LETTERS; i++) {
-      let letterBits = this.word[i].toBits();
-      for (let j = 0; j < Word.N_LETTER_BITS; j++) {
-        wordBits.push(letterBits[j]);
-      }
-    }
-    return Field.ofBits(wordBits);
+    return Word.serializeRaw(this.word);
   }
 
   getChar(i: number): Field {
@@ -89,6 +82,25 @@ export class Word {
       ret = ret && this.word[i].equals(othr.word[i]);
     }
     return ret;
+  }
+  
+  static fromRaw(word: Field[]): Word {
+    return new Word(this.serializeRaw(word));
+  }
+  
+  static serializeRaw(word: Field[]): Field {
+    if (word.length != Word.N_LETTERS) throw new Error("Word must be made up of 5 letters!");
+    for (let i = 0; i < Word.N_LETTERS; i++) {
+      if (word[i] < 0 || word[i] > 25) throw new Error("Invalid char at idx " + i.toString() + "!");
+    }
+    let wordBits = [];
+    for (let i = 0; i < Word.N_LETTERS; i++) {
+      let letterBits = word[i].toBits();
+      for (let j = 0; j < Word.N_LETTER_BITS; j++) {
+        wordBits.push(letterBits[j]);
+      }
+    }
+    return Field.ofBits(wordBits);
   }
 }
 
@@ -145,7 +157,7 @@ export class Clues {
     this.clues[Number(nRow.toBigInt())] = clue;
   }
 }
-class WordleState extends CircuitValue {
+export class WordleState extends CircuitValue {
   // Some random salt to prevent rainbow table of valid sultions.
   @prop commitSalt: Field;
   // Commit (poseidon hash) of the solution + the random salt.
@@ -182,7 +194,7 @@ class WordleState extends CircuitValue {
   }
 }
 
-let Wordle = ZkProgram({
+export let Wordle = ZkProgram({
   publicInput: WordleState,
 
   methonds: {
@@ -227,7 +239,7 @@ let Wordle = ZkProgram({
         playersTurn.assertEquals(false);
         
         // Make sure to flip this flag in next turn.
-        prevProof.publicInput.playersTurn.assertEquals(true);
+        publicInput.playersTurn.assertEquals(true);
 
         // Check if nRow + 1 > 5. If so finish game.
         let nRow = prevProof.publicInput.nRow;
@@ -269,7 +281,7 @@ let Wordle = ZkProgram({
         playersTurn.assertEquals(true);
 
         // Make sure to flip this flag in next turn.
-        prevProof.publicInput.playersTurn.assertEquals(false);
+        publicInput.playersTurn.assertEquals(false);
         
         // Update lastGuess and stats.
         publicInput.lastGuess.serialize().assertEquals(guess.serialize());

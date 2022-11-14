@@ -5,9 +5,6 @@ import {
   State,
   method,
   Bool,
-  DeployArgs,
-  Permissions,
-  CircuitValue,
   Poseidon,
 } from 'snarkyjs';
 
@@ -59,14 +56,7 @@ export class Word {
   }
 
   serialize(): Field {
-    let wordBits = [];
-    for (let i = 0; i < Word.N_LETTERS; i++) {
-      let letterBits = this.word[i].toBits();
-      for (let j = 0; j < Word.N_LETTER_BITS; j++) {
-        wordBits.push(letterBits[j]);
-      }
-    }
-    return Field.ofBits(wordBits);
+    return Word.serializeRaw(this.word);
   }
 
   getChar(i: number): Field {
@@ -92,6 +82,25 @@ export class Word {
       ret = ret && this.word[i].equals(othr.word[i]);
     }
     return ret;
+  }
+
+  static fromRaw(word: Field[]): Word {
+    return new Word(this.serializeRaw(word));
+  }
+  
+  static serializeRaw(word: Field[]): Field {
+    if (word.length != Word.N_LETTERS) throw new Error("Word must be made up of 5 letters!");
+    for (let i = 0; i < Word.N_LETTERS; i++) {
+      if (word[i] < 0 || word[i] > 25) throw new Error("Invalid char at idx " + i.toString() + "!");
+    }
+    let wordBits = [];
+    for (let i = 0; i < Word.N_LETTERS; i++) {
+      let letterBits = word[i].toBits();
+      for (let j = 0; j < Word.N_LETTER_BITS; j++) {
+        wordBits.push(letterBits[j]);
+      }
+    }
+    return Field.ofBits(wordBits);
   }
 }
 
@@ -166,12 +175,13 @@ export class Wordle extends SmartContract {
   // Last guessed word embeded into a single field elem.
   @state(Field) lastGuess = State<Field>();
 
-  deploy(args: DeployArgs) {
-    super.deploy(args);
-    this.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
-    });
+  @method init(salt: Field, solution: Word) {
+    // TODO: Check that the solution is valid so the code generator can't create an
+    // illegal game.
+    //
+    // Store a hash of the solution so the code generator can't change the code // in the middle of the game.
+    this.saltCommit.set(salt);
+    this.solutionCommit.set(solution.hash(salt));
 
     this.nRow.set(new Field(0));
     this.clues.set(new Field(0));
