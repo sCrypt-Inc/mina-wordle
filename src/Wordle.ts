@@ -45,13 +45,14 @@ export class Word {
   word: Field[];
 
   constructor(serializedWord: Field) {
+    this.word = [];
     const wordBits = serializedWord.toBits();
     for (let i = 0; i < Word.N_LETTERS; i++) {
       let letterBits = [];
       for (let j = 0; j < Word.N_LETTER_BITS; j++) {
         letterBits.push(wordBits[i * Word.N_LETTER_BITS + j]);
       }
-      this.word.push(Field.ofBits(letterBits)); 
+      this.word.push(Field.fromBits(letterBits)); 
     }
   }
 
@@ -91,7 +92,7 @@ export class Word {
   static serializeRaw(word: Field[]): Field {
     if (word.length != Word.N_LETTERS) throw new Error("Word must be made up of 5 letters!");
     for (let i = 0; i < Word.N_LETTERS; i++) {
-      if (word[i] < 0 || word[i] > 25) throw new Error("Invalid char at idx " + i.toString() + "!");
+      if (word[i].lt(0) || word[i].gt(25)) throw new Error("Invalid char at idx " + i.toString() + "!");
     }
     let wordBits = [];
     for (let i = 0; i < Word.N_LETTERS; i++) {
@@ -100,7 +101,7 @@ export class Word {
         wordBits.push(letterBits[j]);
       }
     }
-    return Field.ofBits(wordBits);
+    return Field.fromBits(wordBits);
   }
 }
 
@@ -117,7 +118,7 @@ export class Clues {
       let offsetRow = i * Clues.N_CLUE_LETTER_BITS * Clues.N_CLUES;
       for (let j = 0; j < Word.N_LETTERS; j++) {
         let offsetVal = offsetRow + (j * Clues.N_CLUE_LETTER_BITS);
-        this.clues[i].push(Field.ofBits([
+        this.clues[i].push(Field.fromBits([
                             serializedCluesBits[offsetVal],
                             serializedCluesBits[offsetVal + 1]
                            ]));
@@ -135,7 +136,7 @@ export class Clues {
           }
       }
     }
-    return Field.ofBits(cluesBits);
+    return Field.fromBits(cluesBits);
   }
 
   update(solutionWord: Word, guessedWord: Word, nRow: Field) {

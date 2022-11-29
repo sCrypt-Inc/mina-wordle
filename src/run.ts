@@ -2,15 +2,19 @@ import {
   Permissions,
   PrivateKey,
   Mina,
-  Party,
+  AccountUpdate,
   isReady,
   shutdown,
   Field,
 } from 'snarkyjs';
 
-import { Word, Clues, Wordle } from './Wordle.js';
+import { Word, Wordle } from './Wordle.js';
 
 await isReady;
+
+function mapToFieldElems(inArr: number[]): Field[] {
+    return inArr.map(function (x: number) { return new Field(x); });
+}
 
 let withProofs = true;
 
@@ -25,15 +29,15 @@ console.log('Local Blockchain Online!');
 
 if (withProofs) {
   console.log('compiling...');
-  await Wordle.compile(zkAppAddress);
+  await Wordle.compile();
 }
 
-let solutionRaw = [18, 12, 0, 17, 19]; // "SMART"
+let solutionRaw = mapToFieldElems([18, 12, 0, 17, 19]); // "SMART"
 let solution = new Word(Word.serializeRaw(solutionRaw));
 let salt = new Field(123);
 
 let tx = await Mina.transaction(publisherAccount, () => {
-  Party.fundNewAccount(publisherAccount);
+  AccountUpdate.fundNewAccount(publisherAccount);
   zkapp.deploy({ zkappKey: zkAppPrivateKey });
   if (!withProofs) {
     zkapp.setPermissions({
@@ -42,7 +46,7 @@ let tx = await Mina.transaction(publisherAccount, () => {
     });
   }
 });
-tx.send().wait();
+tx.send();
 
 tx = await Mina.transaction(publisherAccount, () => {
   zkapp.init(salt, solution);
@@ -52,98 +56,98 @@ if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Contract deployed and initialized!');
 
 //-----------------------
 
-let guessRaw = [18, 13, 0, 8, 11]; // "SNAIL"
+let guessRaw = mapToFieldElems([18, 13, 0, 8, 11]); // "SNAIL"
 let guess = new Word(Word.serializeRaw(solutionRaw));
 tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.updatePlayer(guess);
+  zkapp.updatePlayer(guess.serialize());
   if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
 if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Guess Submitted!');
 
 //-----------------------
 
 tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.updateHouse(solution);
+  zkapp.updateHouse(solution.serialize());
   if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
 if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Clues: ' + zkapp.clues.get().toString());
 
 //-----------------------
 
-guessRaw = [18, 19, 0, 17, 19]; // "START"
+guessRaw = mapToFieldElems([18, 19, 0, 17, 19]); // "START"
 guess = new Word(Word.serializeRaw(solutionRaw));
 tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.updatePlayer(guess);
+  zkapp.updatePlayer(guess.serialize());
   if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
 if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Guess Submitted!');
 
 //---------------------
 
 tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.updateHouse(solution);
+  zkapp.updateHouse(solution.serialize());
   if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
 if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Clues: ' + zkapp.clues.get().toString());
 
 
 //-----------------------
 
-guessRaw = [18, 12, 0, 17, 19]; // "SMART"
+guessRaw = mapToFieldElems([18, 12, 0, 17, 19]); // "SMART"
 guess = new Word(Word.serializeRaw(solutionRaw));
 tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.updatePlayer(guess);
+  zkapp.updatePlayer(guess.serialize());
   if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
 if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Guess Submitted!');
 
 //-----------------------
 
 tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.updateHouse(solution);
+  zkapp.updateHouse(solution.serialize());
   if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
 if (withProofs) {
   console.log('proving...');
   await tx.prove();
 }
-tx.send().wait();
+tx.send();
 
 console.log('Clues: ' + zkapp.clues.get().toString());
 

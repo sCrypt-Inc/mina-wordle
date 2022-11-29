@@ -2,10 +2,16 @@ import {
   Field,
   Poseidon,
   Bool,
-  ZkProgram,
+  Experimental,
+  Proof,
+  SmartContract,
+  State,
+  state,
+  method,
   CircuitValue,
   prop,
   SelfProof,
+  arrayProp,
 } from 'snarkyjs';
 
 // We need a minimum of 5 bits to represent 26 uppercase english letters.
@@ -38,20 +44,23 @@ import {
 // Y -> 24
 // Z -> 25
 
-export class Word {
+export class Word extends CircuitValue {
   static readonly N_LETTERS = 5;
   static readonly N_LETTER_BITS = 5;
 
-  word: Field[];
+  @arrayProp(Field, Word.N_LETTERS) word: Field[];
 
   constructor(serializedWord: Field) {
+    super();
+
+    this.word = [];
     const wordBits = serializedWord.toBits();
     for (let i = 0; i < Word.N_LETTERS; i++) {
       let letterBits = [];
       for (let j = 0; j < Word.N_LETTER_BITS; j++) {
         letterBits.push(wordBits[i * Word.N_LETTER_BITS + j]);
       }
-      this.word.push(Field.ofBits(letterBits)); 
+      this.word.push(Field.fromBits(letterBits)); 
     }
   }
 
@@ -75,11 +84,11 @@ export class Word {
     return ret;
   }
   
-  equal(othr: Word): Bool {
-    // TODO: can we just compare arrays directly?
+  compare(othr: Word): Bool {
+    // TODO: Can we just compare arrays directly?
     let ret = new Bool(true);
     for (let i = 0; i < Word.N_LETTERS; i++) {
-      ret = ret && this.word[i].equals(othr.word[i]);
+      ret = ret.and(this.word[i].equals(othr.word[i]));
     }
     return ret;
   }
@@ -89,10 +98,11 @@ export class Word {
   }
   
   static serializeRaw(word: Field[]): Field {
-    if (word.length != Word.N_LETTERS) throw new Error("Word must be made up of 5 letters!");
-    for (let i = 0; i < Word.N_LETTERS; i++) {
-      if (word[i] < 0 || word[i] > 25) throw new Error("Invalid char at idx " + i.toString() + "!");
-    }
+    // TODO: Where to do these assertions?
+    //if (word.length != Word.N_LETTERS) throw new Error("Word must be made up of 5 letters!");
+    //for (let i = 0; i < Word.N_LETTERS; i++) {
+    //  if (word[i].lt(0) || word[i].gt(25)) throw new Error("Invalid char at idx " + i.toString() + "!");
+    //}
     let wordBits = [];
     for (let i = 0; i < Word.N_LETTERS; i++) {
       let letterBits = word[i].toBits();
@@ -100,24 +110,27 @@ export class Word {
         wordBits.push(letterBits[j]);
       }
     }
-    return Field.ofBits(wordBits);
+    return Field.fromBits(wordBits);
   }
 }
 
-export class Clues {
+export class Clues extends CircuitValue { // TODO: Circuit value could store only latest clue, not all. Like with Word.
   static readonly N_CLUES = 6
   static readonly N_CLUE_LETTER_BITS = 2;
 
   // Values: 0 -> Grey, 1 -> Yellow, 2 -> Green
-  clues = new Array<Field[]>(Clues.N_CLUES);
+  @arrayProp(Field, Clues.N_CLUES * Word.N_LETTERS) clues: Field[];
 
   constructor(serializedClues: Field) {
+    super();
+
+    this.clues = [];
     let serializedCluesBits = serializedClues.toBits();
     for (let i = 0; i < Clues.N_CLUES; i++) {
       let offsetRow = i * Clues.N_CLUE_LETTER_BITS * Clues.N_CLUES;
       for (let j = 0; j < Word.N_LETTERS; j++) {
         let offsetVal = offsetRow + (j * Clues.N_CLUE_LETTER_BITS);
-        this.clues[i].push(Field.ofBits([
+        this.clues.push(Field.fromBits([
                             serializedCluesBits[offsetVal],
                             serializedCluesBits[offsetVal + 1]
                            ]));
@@ -129,34 +142,41 @@ export class Clues {
     let cluesBits = [];
     for (let i = 0; i < Clues.N_CLUES; i++) {
       for (let j = 0; j < Word.N_LETTERS; j++) {
-          let clueLetterBits = this.clues[i][j].toBits();
+          let clueLetterBits = this.clues[i * Word.N_LETTERS + j].toBits();
           for (let k = 0; k < Clues.N_CLUE_LETTER_BITS; k++) {
             cluesBits.push(clueLetterBits[k]);
           }
       }
     }
-    return Field.ofBits(cluesBits);
+    return Field.fromBits(cluesBits);
   }
 
   update(solutionWord: Word, guessedWord: Word, nRow: Field) {
-    let clue = new Array<Field>(Word.N_LETTERS);
-    for (let i = 0; i < Word.N_LETTERS; i++) {
-      for (let j = 0; j < Word.N_LETTERS; j++) {
-        if (guessedWord.getChar(i) == solutionWord.getChar(j)) {
-          // Mark yellow (1)
-          clue[i] = new Field(1)
+    for (let nRowNum = 0; nRowNum < Clues.N_CLUES; nRowNum ++) {
+      if (nRow.equals(nRowNum)) {
+        for (let i = 0; i < Word.N_LETTERS; i++) {
+          let val = new Field(0);
+
+          for (let j = 0; j < Word.N_LETTERS; j++) {
+            if (guessedWord.getChar(i) == solutionWord.getChar(j)) {
+              // Mark yellow (1)
+              val = new Field(1)
+            }
+          }
+          
+          if (guessedWord.getChar(i) == solutionWord.getChar(i)) {
+            // Mark green (2) 
+            val = new Field(2);
+          }
+          
+          this.clues[nRowNum * Word.N_LETTERS + i] = val;
         }
       }
-      
-      if (guessedWord.getChar(i) == solutionWord.getChar(i)) {
-        // Mark green (2) 
-        clue[i] = new Field(2);
-      }
     }
-
-    this.clues[Number(nRow.toBigInt())] = clue;
   }
+
 }
+
 export class WordleState extends CircuitValue {
   // Some random salt to prevent rainbow table of valid sultions.
   @prop commitSalt: Field;
@@ -194,10 +214,13 @@ export class WordleState extends CircuitValue {
   }
 }
 
-export let Wordle = ZkProgram({
+export { Wordle };
+
+let Wordle = Experimental.ZkProgram({
+
   publicInput: WordleState,
 
-  methonds: {
+  methods: {
     init: { // Base case; This will commit the house to the valid solution.
             //            It cannot be changed after the init or else the recursive
             //            proof verification will fail.
@@ -213,7 +236,7 @@ export let Wordle = ZkProgram({
         publicInput.solutionCommit.assertEquals(solution.hash(publicInput.commitSalt));
         publicInput.nRow.assertEquals(Field.zero);
         publicInput.clues.serialize().assertEquals(Field.zero);
-        publicInput.playersTurn.assertEquals(new Bool(false));
+        publicInput.playersTurn.assertEquals(new Bool(true));
         publicInput.gameFinished.assertEquals(new Bool(false));
         publicInput.lastGuess.isNone().assertEquals(new Bool(true));
       }
@@ -232,7 +255,6 @@ export let Wordle = ZkProgram({
         // If the game is already finished, abort.
         const finished = prevProof.publicInput.gameFinished;
         finished.assertEquals(false);
-        publicInput.gameFinished.assertEquals(false);
 
         // Check if it's the "houses" turn.
         const playersTurn = prevProof.publicInput.playersTurn;
@@ -251,7 +273,7 @@ export let Wordle = ZkProgram({
         solution.hash(prevProof.publicInput.commitSalt).assertEquals(prevProof.publicInput.solutionCommit);
         
         // Check if player guessed right word. If so finish game.
-        let rightWord = prevProof.publicInput.lastGuess.equal(solution);
+        let rightWord = prevProof.publicInput.lastGuess.compare(solution);
         publicInput.gameFinished.assertEquals(rightWord);
 
         // Update clues.
@@ -297,3 +319,26 @@ export let Wordle = ZkProgram({
   }
 
 })
+
+// class that describes the rolled up proof
+export class WordleProof extends Proof<WordleState> {
+  static publicInputType = WordleState;
+  static tag = () => Wordle;
+}
+
+export class WordleRollup extends SmartContract {
+  @state(Bool) someoneWon = State<Bool>();
+
+  @method publishCompletedGame(
+    proof: WordleProof // <-- we're passing in a proof!
+  ) {
+    // verify the proof
+    proof.verify();
+    
+    // check if game finished;
+    proof.publicInput.gameFinished.assertEquals(true);
+
+    // declare that someone won this game!
+    this.someoneWon.set(Bool(true));
+  }
+}
